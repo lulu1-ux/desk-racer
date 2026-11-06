@@ -170,6 +170,7 @@ h1 em{font-style:normal;color:var(--mag);text-shadow:0 0 22px rgba(255,58,208,.9
       <span>TRACK LIMIT</span><b id="offTxt" style="color:#5cff9d">ON LINE</b></div>
     <div class="trow" id="weatherRow"><span>WEATHER</span>
       <b style="color:#7fdcff;text-shadow:0 0 8px rgba(60,200,255,.65)">雨天 · 路面湿滑</b></div>
+    <div class="trow"><span>AUDIO</span><b id="audioTxt" style="color:#8fe6a0">ON · M 静音</b></div>
   </div>
 
   <div id="mapPanel" class="panel">
@@ -183,6 +184,7 @@ h1 em{font-style:normal;color:var(--mag);text-shadow:0 0 22px rgba(255,58,208,.9
     <span><kbd>SPACE</kbd>手刹</span><span class="sep"></span>
     <span><kbd>C</kbd>视角 <b id="camName">FOLLOW</b></span><span class="sep"></span>
     <span><kbd>R</kbd>重置</span><span class="sep"></span>
+    <span><kbd>M</kbd>静音</span><span class="sep"></span>
     <span><kbd>P</kbd>暂停</span>
   </div>
   <div id="perf"></div><div id="toast"></div>
@@ -279,7 +281,7 @@ let T,renderer,scene,camera,composer,bloom,scanPass=null,clockTime=0,gameTime=0;
 let camLook,camDesired,tmpV,tmpQ;
 let C_WHITE,C_SMOKE,C_SPARK,C_CYAN,C_DUST,C_STEAM,C_FOG_WHITE,C_FOG_CYAN,C_FOG_MAG,C_FOG_WARM;
 let DPR=1,prScale=1,fpsTimer=0,frames=0,fps=60,frameNo=0;
-const DESK_W=1020,DESK_D=660,HW=510,HD=330,CAR_R=1.95;
+const DESK_W=1020,DESK_D=660,HW=510,HD=330,CAR_R=1.95,TRACK_HALF=7.2;
 let carRoot,tilt,bodyGroup,underGlow,shadowFake;
 const wheels={},headGlow=[],tailMats=[],billboards=[],shaderMats=[],gates=[],keyGlowMats=[];
 const colliders=[],propData=[],cpFlash=new Array(CP_COUNT).fill(0);
@@ -290,6 +292,7 @@ let cityWindowMat=null;
 let reflRT=null,reflCam=null,groundMat=null,groundMesh=null,reflClip=null;
 let fogLayers=[],noRefl=[],rainLines=null,rippleMesh=null;
 let rainData=[],ripStart=[],ripPos=[],drips=[],dripTimer=0,odenT=0,wetSprayT=0;
+let signMesh=null,signGlowMat=null,signRed=null,signFlick=0,signFlickT=3.2,signBreath=1;
 let camMode=0;const CAM_NAMES=['FOLLOW','GROUND LOW','TOP DOWN','CINEMATIC'];
 let camShake=0,running=false,paused=false,finished=false;
 let lap=0,nextCP=1,lapStart=0,lastLap=null,bestLap=null,lapTimes=[],prevT=0;
@@ -477,7 +480,7 @@ function buildTrack(){
   }
   for(let i=0;i<N;i++)len+=pts[i].distanceTo(pts[(i+1)%N]);
   track.pts=pts;track.tans=tans;track.ys=ys;track.len=len;
-  const HALF=7.2,pos=[],uv=[],idx=[];
+  const HALF=TRACK_HALF,pos=[],uv=[],idx=[];
   for(let i=0;i<=N;i++){
     const p=pts[i%N],tn=tans[i%N],nx=-tn.z,nz=tn.x,y=ys[i%N];
     pos.push(p.x+nx*HALF,y+.012,p.z+nz*HALF,p.x-nx*HALF,y+.012,p.z-nz*HALF);
@@ -486,8 +489,33 @@ function buildTrack(){
   }
   const rg=new T.BufferGeometry();rg.setAttribute('position',new T.Float32BufferAttribute(pos,3));
   rg.setAttribute('uv',new T.Float32BufferAttribute(uv,2));rg.setIndex(idx);rg.computeVertexNormals();
-  const road=new T.Mesh(rg,new T.MeshBasicMaterial({color:0x0a0620,transparent:true,opacity:.30,
-    depthWrite:false,side:T.DoubleSide}));road.renderOrder=1;scene.add(road);
+  // 路面：磨损轮迹 + 湿痕 + 被雨水啃出不规则边缘
+  const roadMat=new T.ShaderMaterial({
+    uniforms:{uT:{value:0}},
+    vertexShader:`varying vec2 vUv;void main(){vUv=uv;gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0);}`,
+    fragmentShader:`
+      varying vec2 vUv;uniform float uT;
+      float h21(vec2 p){return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453);}
+      float vn(vec2 p){vec2 i=floor(p),f=fract(p);f=f*f*(3.0-2.0*f);
+        return mix(mix(h21(i),h21(i+vec2(1,0)),f.x),mix(h21(i+vec2(0,1)),h21(i+vec2(1,1)),f.x),f.y);}
+      void main(){
+        float u=vUv.x,v=vUv.y;
+        float en=vn(vec2(v*9.0,3.7))*.6+vn(vec2(v*37.0,9.1))*.4;
+        float edge=smoothstep(0.0,0.030+en*.055,u)*smoothstep(1.0,0.970-en*.055,u);
+        float grain=vn(vec2(v*110.0,u*30.0))*.6+vn(vec2(v*300.0,u*80.0))*.4;
+        float wear=exp(-pow((u-.275)*13.0,2.0))+exp(-pow((u-.725)*13.0,2.0));
+        float wet=smoothstep(.42,.74,vn(vec2(v*12.0,u*3.0)))*smoothstep(.34,.66,vn(vec2(v*4.1,u*1.6)));
+        float pud=smoothstep(.80,.93,vn(vec2(v*6.5,u*2.4)));
+        vec3 col=mix(vec3(.030,.026,.055),vec3(.115,.115,.145),clamp(wear*.6+grain*.30,0.,1.));
+        col=mix(col,vec3(.016,.018,.034),wet*.55);
+        col=mix(col,vec3(.05,.06,.09),pud*.4);
+        float a=(.26+wear*.20+grain*.09)*(1.0-wet*.25-pud*.35);
+        a*=edge;
+        gl_FragColor=vec4(col,a);
+      }`,
+    transparent:true,depthWrite:false,side:T.DoubleSide});
+  const road=new T.Mesh(rg,roadMat);road.renderOrder=1;scene.add(road);
+  shaderMats.push(roadMat);
   const dashG=new T.BoxGeometry(.62,.06,3.0),dashM=EM(0xbfefff,.4,{roughness:.6});
   const curbG=new T.BoxGeometry(2.0,.28,1.1),curbR=EM(NEON_MAG,.7),curbW=EM(NEON_CYAN,.55);
   const nDash=760,nCurb=1080,dummy=new T.Object3D();
@@ -495,8 +523,12 @@ function buildTrack(){
   const curbsA=new T.InstancedMesh(curbG,curbR,nCurb),curbsB=new T.InstancedMesh(curbG,curbW,nCurb);
   for(let i=0;i<nDash;i++){
     const t=i/nDash,p=curve.getPointAt(t),tn=curve.getTangentAt(t),y=trackHeight(t);
-    dummy.position.set(p.x,y+.055,p.z);dummy.rotation.set(0,Math.atan2(tn.x,tn.z),0);
-    dummy.scale.set(1,1,1);dummy.updateMatrix();dashes.setMatrixAt(i,dummy.matrix);
+    // 标线被轮胎压过、被雨水泡过：每段都有轻微歪斜、粗细不一，偶有磨掉的一小段
+    const gone=rnd(0,1)<.035?.0:1;
+    dummy.position.set(p.x+rnd(-.13,.13),y+.052+rnd(-.012,.012),p.z+rnd(-.13,.13));
+    dummy.rotation.set(rnd(-.012,.012),Math.atan2(tn.x,tn.z)+rnd(-.05,.05),rnd(-.02,.02));
+    dummy.scale.set(gone*rnd(.82,1.06),1,gone*rnd(.86,1.16));
+    dummy.updateMatrix();dashes.setMatrixAt(i,dummy.matrix);
   }
   for(let i=0;i<nCurb;i++){
     const t=i/nCurb,p=curve.getPointAt(t),tn=curve.getTangentAt(t),ang=Math.atan2(tn.x,tn.z);
@@ -521,6 +553,61 @@ function buildTrack(){
     const b=box(3,.22,7.6,EM(NEON_CYAN,1.1),p.x,trackHeight(t)+.3,p.z,scene,[0,Math.atan2(tn.x,tn.z),0]);
     b.castShadow=false;
   }
+  buildGuardrail();
+}
+
+/* 长直道护栏：锈斑 + 反光贴，带碰撞（只铺在近似轴对齐的直道，碰撞盒与视觉严格对齐） */
+function buildGuardrail(){
+  const R=[],P=[],S=[],C=[],N=track.N,step=5,off=TRACK_HALF+2.8;
+  for(let i=0;i<N;i+=step){
+    const j=(i+step)%N,p0=track.pts[i],p1=track.pts[j];
+    const tx=p1.x-p0.x,tz=p1.z-p0.z,ln=Math.hypot(tx,tz);
+    if(ln<1)continue;
+    const ang=Math.atan2(tx,tz),sx=Math.abs(Math.sin(ang)),sz=Math.abs(Math.cos(ang));
+    if(Math.max(sx,sz)<.988)continue;                 // 只铺在轴对齐路段
+    const a0=track.tans[(i-9+N)%N],a1=track.tans[(i+9)%N];
+    if(a0.x*a1.x+a0.z*a1.z<.988)continue;             // 曲率大的弯道不铺，避免把车困住
+    const mx=(p0.x+p1.x)/2,mz=(p0.z+p1.z)/2,y=(track.ys[i]+track.ys[j])/2;
+    if(y>.2)continue;                                  // 缓坡段不铺，免得护栏悬空
+    const nx=-tz/ln,nz=tx/ln;
+    for(const s of [-1,1]){
+      const x=mx+nx*s*off,z=mz+nz*s*off;
+      R.push({x,z,y,ang,len:ln*1.16,sx,sz});
+      P.push({x:x-nx*s*.04,y,z:z-nz*s*.04,ang});
+      if(((i/step)|0)%2===0)S.push({x:x-nx*s*.18,y:y+1.16,z:z-nz*s*.18,ang});
+      if(Math.random()<.62)C.push({x:x-nx*s*.152,z:z-nz*s*.152,y:y+1.15+rnd(-.24,.24),
+        ang,w:rnd(.5,1.8),h:rnd(.12,.34)});
+    }
+  }
+  if(!R.length)return;
+  const d=new T.Object3D(),tc=new T.Color();
+  const railM=new T.MeshStandardMaterial({color:0x99a3ae,roughness:.46,metalness:.4,emissive:0x0b0f14,emissiveIntensity:.9});
+  const rails=new T.InstancedMesh(new T.BoxGeometry(.28,.62,1),railM,R.length);
+  R.forEach((r,i)=>{
+    d.position.set(r.x,r.y+1.15,r.z);d.rotation.set(0,r.ang,0);d.scale.set(1,1,r.len);
+    d.updateMatrix();rails.setMatrixAt(i,d.matrix);
+    const rust=i%7===0?.62:i%11===0?.34:rnd(0,.12);   // 一段一段的锈
+    tc.setRGB(1-rust*.55,1-rust*.72,1-rust*.82);rails.setColorAt(i,tc);
+    if(r.sx>.988)addCollider({c:'box',rail:1,x:r.x,z:r.z,hx:r.len/2,hz:.3,label:'GUARDRAIL'});
+    else addCollider({c:'box',rail:1,x:r.x,z:r.z,hx:.3,hz:r.len/2,label:'GUARDRAIL'});
+  });
+  rails.instanceMatrix.needsUpdate=true;if(rails.instanceColor)rails.instanceColor.needsUpdate=true;
+  rails.castShadow=false;rails.receiveShadow=false;rails.frustumCulled=false;scene.add(rails);
+  const posts=new T.InstancedMesh(new T.BoxGeometry(.2,1.3,.2),
+    M(0x6d747d,{roughness:.62,metalness:.5}),P.length);
+  P.forEach((p,i)=>{d.position.set(p.x,p.y+.6,p.z);d.rotation.set(0,p.ang,0);d.scale.set(1,1,1);
+    d.updateMatrix();posts.setMatrixAt(i,d.matrix);});
+  posts.instanceMatrix.needsUpdate=true;posts.frustumCulled=false;scene.add(posts);
+  const rustM=new T.MeshStandardMaterial({color:0x6a3a1d,roughness:.95,metalness:.15});
+  const rusts=new T.InstancedMesh(new T.BoxGeometry(1,1,.03),rustM,C.length);
+  C.forEach((c,i)=>{d.position.set(c.x,c.y,c.z);d.rotation.set(0,c.ang,0);d.scale.set(c.w,c.h,1);
+    d.updateMatrix();rusts.setMatrixAt(i,d.matrix);});
+  rusts.instanceMatrix.needsUpdate=true;rusts.frustumCulled=false;scene.add(rusts);
+  const stk=new T.InstancedMesh(new T.BoxGeometry(.52,.18,.035),
+    EM(0xffd98c,1.9,{roughness:.28}),S.length);
+  S.forEach((s,i)=>{d.position.set(s.x,s.y,s.z);d.rotation.set(0,s.ang,0);d.scale.set(1,1,1);
+    d.updateMatrix();stk.setMatrixAt(i,d.matrix);});
+  stk.instanceMatrix.needsUpdate=true;stk.frustumCulled=false;scene.add(stk);
 }
 
 /* ---------- 机械键盘 ---------- */
@@ -799,87 +886,154 @@ function buildGates(){
 }
 
 /* ---------- 赛车 ---------- */
+const WHEEL_R=.80;
+function mergeGeos(list){
+  let n=0;const gs=[];
+  for(const g of list){const q=g.index?g.toNonIndexed():g;gs.push(q);n+=q.attributes.position.count;}
+  const pos=new Float32Array(n*3),nor=new Float32Array(n*3);let o=0;
+  for(const g of gs){
+    pos.set(g.attributes.position.array,o*3);nor.set(g.attributes.normal.array,o*3);
+    o+=g.attributes.position.count;
+  }
+  const out=new T.BufferGeometry();
+  out.setAttribute('position',new T.BufferAttribute(pos,3));
+  out.setAttribute('normal',new T.BufferAttribute(nor,3));
+  return out;
+}
+function xg(geo,x,y,z,rx,ry,rz){
+  geo.applyMatrix4(new T.Matrix4().compose(new T.Vector3(x,y,z),
+    new T.Quaternion().setFromEuler(new T.Euler(rx||0,ry||0,rz||0)),new T.Vector3(1,1,1)));
+  return geo;
+}
 function buildCar(){
   carRoot=new T.Group();scene.add(carRoot);
   tilt=new T.Group();carRoot.add(tilt);
   bodyGroup=new T.Group();tilt.add(bodyGroup);
-  const paint=M(0xff3b30,{roughness:.28,metalness:.42});
-  const paintDark=M(0x9d1810,{roughness:.35,metalness:.4});
-  const carbon=M(0x11161b,{roughness:.42,metalness:.55});
-  const glass=EM(0x0d3b52,.32,{roughness:.08,metalness:.75,transparent:true,opacity:.82});
-  const chrome=M(0xd7e6ee,{roughness:.2,metalness:.95});
-  box(3.05,.42,6.85,carbon,0,.72,0,bodyGroup);
-  box(3.5,.16,5.2,carbon,0,.5,0,bodyGroup);
-  loft([{z:-3.45,w:1.44,y:1.30},{z:-2.55,w:1.52,y:1.55},{z:-1.05,w:1.46,y:1.62},
-        {z:-.55,w:1.18,y:2.06},{z:.95,w:1.18,y:2.06},{z:1.75,w:1.44,y:1.52},
-        {z:2.85,w:1.40,y:1.32},{z:3.45,w:1.20,y:1.18}],.82,paint,bodyGroup);
-  loft([{z:-1.10,w:1.02,y:2.06},{z:-.65,w:.92,y:2.66},{z:.60,w:.92,y:2.66},
-        {z:1.05,w:1.02,y:2.06}],2.05,glass,bodyGroup);
-  box(1.9,.06,.12,EM(0x5ff0ff,1.1),0,2.67,-.62,bodyGroup);
-  for(const s of [-1,1])box(.24,.03,6.4,M(0xfff4dd,{roughness:.5}),s*.55,1.66,0,bodyGroup);
-  box(.3,.04,2,EM(0xffd23f,.28,{roughness:.5}),0,2.69,.1,bodyGroup);
-  box(3.85,.16,1,carbon,0,.52,3.65,bodyGroup);
-  box(3.95,.1,.28,paintDark,0,.66,4.05,bodyGroup);
+  const paint=M(0xe6322a,{roughness:.30,metalness:.26,emissive:0x2c0604,emissiveIntensity:.55});
+  const paintDark=M(0x8d1510,{roughness:.38,metalness:.22,emissive:0x1c0402,emissiveIntensity:.5});
+  const carbon=M(0x0d1116,{roughness:.36,metalness:.6});
+  const carbon2=M(0x1b2129,{roughness:.7,metalness:.25});
+  const glass=EM(0x0a2536,.82,{roughness:.05,metalness:.9,transparent:true,opacity:.88});
+  const chrome=M(0xe2edf2,{roughness:.14,metalness:.98});
+  const dark=M(0x04060a,{roughness:.92,metalness:.12});
+  const headM=EM(0xe6f8ff,3.6,{roughness:.16});
+  const tailM=EM(0xff1420,1.1,{roughness:.28});tailMats.push(tailM);
+  const stripC=EM(0x36e8ff,1.1,{roughness:.35});
+
+  /* 底盘 / 侧裙 / 前铲 */
+  box(3.30,.14,6.40,carbon,0,.34,0,bodyGroup);
   for(const s of [-1,1]){
-    box(.55,.42,.85,carbon,s*1.55,.72,3.55,bodyGroup,[.18,0,s*.12]);
-    box(.85,.1,.5,carbon,s*1.15,.52,3.15,bodyGroup,[0,s*.24,0]);
+    box(.22,.22,4.20,carbon,s*1.66,.40,-.10,bodyGroup);
+    box(.07,.07,3.70,stripC,s*1.76,.47,-.10,bodyGroup);
+    box(.50,.05,.30,carbon,s*1.60,.34,3.10,bodyGroup,[0,0,s*.12]);
   }
-  for(const s of [-1,1])box(.18,1.15,.22,carbon,s*1.15,1.95,-3.05,bodyGroup,[.12,0,0]);
-  box(4.25,.16,1.05,carbon,0,2.55,-3.15,bodyGroup,[-.13,0,0]);
-  box(4.25,.05,.5,paint,0,2.66,-3.62,bodyGroup,[-.13,0,0]);
-  for(const s of [-1,1])box(.12,.62,1.15,carbon,s*2.12,2.35,-3.12,bodyGroup,[0,0,s*.05]);
-  box(1.4,.12,.12,EM(0xff2233,2.2),0,2.42,-3.05,bodyGroup);
-  for(const s of [-1,1]){
-    box(.18,.28,3.3,carbon,s*1.56,.62,-.1,bodyGroup);
-    box(.12,.42,.9,carbon,s*1.48,1.25,-1.55,bodyGroup,[0,0,s*.2]);
-    box(.3,.22,.5,carbon,s*1.3,.7,-3.35,bodyGroup);
+  /* 主车身：尾高头低的楔形 */
+  loft([{z:-3.46,w:1.46,y:1.06},{z:-3.06,w:1.64,y:1.18},{z:-2.28,w:1.70,y:1.26},
+        {z:-1.30,w:1.58,y:1.22},{z:-.40,w:1.50,y:1.14},{z:.72,w:1.48,y:1.06},
+        {z:1.74,w:1.54,y:.98},{z:2.58,w:1.46,y:.90},{z:3.12,w:1.22,y:.80},
+        {z:3.44,w:.94,y:.70}],.38,paint,bodyGroup);
+  /* 四个翼子板隆起 + 轮眉 */
+  for(const zc of [-2.30,2.34])for(const s of [-1,1]){
+    const f=loft([{z:zc-1.20,w:.08,y:.86},{z:zc-.92,w:.30,y:1.30},{z:zc-.52,w:.45,y:1.58},
+                  {z:zc+.52,w:.45,y:1.58},{z:zc+.92,w:.30,y:1.30},{z:zc+1.20,w:.08,y:.86}],.46,paint,bodyGroup);
+    f.position.x=s*1.36;
+    const ring=new T.Mesh(new T.TorusGeometry(.86,.045,7,22,Math.PI),paintDark);
+    ring.rotation.y=Math.PI/2;ring.position.set(s*1.83,WHEEL_R,zc);
+    ring.castShadow=true;bodyGroup.add(ring);
   }
-  const headM=EM(0xdff6ff,3.4,{roughness:.2});
+  /* 座舱：低矮气泡 + 碳纤维车顶进气 */
+  loft([{z:1.18,w:.90,y:1.06},{z:.55,w:.82,y:1.62},{z:-.25,w:.84,y:1.94},
+        {z:-1.00,w:.92,y:1.60},{z:-1.62,w:1.00,y:1.24}],1.00,glass,bodyGroup);
+  box(.54,.18,.86,carbon2,0,1.90,-.05,bodyGroup,[.07,0,0]);
+  box(.40,.10,.08,dark,0,1.94,.36,bodyGroup);
+  /* 前脸：中央进气 + 侧进气 + 导流片 + 细长 LED 大灯 */
+  box(3.46,.07,.90,carbon,0,.28,3.40,bodyGroup);
+  box(3.10,.10,.20,paintDark,0,.36,3.84,bodyGroup);
+  box(1.66,.30,.18,dark,0,.54,3.48,bodyGroup);
+  for(let i=-1;i<=1;i++)box(.06,.30,.22,carbon,i*.52,.54,3.54,bodyGroup);
   for(const s of [-1,1]){
-    box(.82,.26,.18,headM,s*.94,1.24,3.42,bodyGroup,[0,s*.12,0]);
-    headGlow.push(glowQuad(0xbfefff,2.6,.4,bodyGroup,s*.94,1.25,3.62));
+    box(.52,.26,.16,dark,s*1.16,.56,3.42,bodyGroup,[0,s*.18,0]);
+    box(.60,.05,.34,carbon,s*1.52,.50,3.28,bodyGroup,[0,0,s*.16]);
+    box(.64,.10,.44,headM,s*.70,.86,3.06,bodyGroup,[0,s*.05,0]);
+    box(.56,.045,.10,EM(0xbfefff,3.0),s*.72,.86,3.28,bodyGroup);
+    headGlow.push(glowQuad(0xbfefff,1.5,.30,bodyGroup,s*.70,.88,3.30));
   }
   const beam=new T.SpotLight(0xcfeaff,1.1,70,Math.PI/7,.55,1.4);
-  beam.position.set(0,1.4,3.2);beam.target.position.set(0,.2,30);
+  beam.position.set(0,1.0,3.1);beam.target.position.set(0,.2,30);
   bodyGroup.add(beam);bodyGroup.add(beam.target);
+  /* 侧进气 + 后视镜 */
   for(const s of [-1,1]){
-    const tm=EM(0xff2020,.85,{roughness:.3});tailMats.push(tm);
-    box(.9,.24,.14,tm,s*1,1.36,-3.48,bodyGroup);
-    box(.24,.12,.14,tm,s*.5,1.05,-3.5,bodyGroup);
+    box(.10,.36,.90,dark,s*1.55,1.00,-1.52,bodyGroup,[0,s*.08,0]);
+    for(let i=0;i<3;i++)box(.05,.30,.11,carbon,s*1.59,.98,-1.84+i*.30,bodyGroup);
+    box(.18,.04,.18,carbon,s*1.40,1.20,1.12,bodyGroup);
+    box(.30,.10,.18,paint,s*1.50,1.24,1.08,bodyGroup,[0,s*.12,0]);
   }
-  for(const s of [-1,1])cyl(.26,.26,.5,10,chrome,s*.62,.72,-3.7,bodyGroup,[Math.PI/2,0,0]);
-  box(.6,.34,.9,carbon,0,2.45,-.95,bodyGroup,[.2,0,0]);
-  cyl(.05,.05,1.3,6,carbon,.9,2.9,-2.2,bodyGroup);
-  const ant=new T.Mesh(new T.SphereGeometry(.14,8,6),EM(0xff5a3c,1.4));
-  ant.position.set(.9,3.55,-2.2);bodyGroup.add(ant);
+  /* 发动机盖散热片 */
+  for(let i=0;i<6;i++)box(1.26,.04,.14,carbon,0,1.29,-1.78-i*.20,bodyGroup,[.06,0,0]);
+  /* 尾翼：鹅颈支架 + 主翼 + 端板 + 扰流唇 */
+  for(const s of [-1,1])box(.09,.54,.16,carbon,s*.62,1.50,-3.02,bodyGroup,[.14,0,0]);
+  box(3.86,.08,.70,carbon,0,1.78,-3.16,bodyGroup,[-.10,0,0]);
+  box(3.86,.15,.05,paintDark,0,1.85,-3.44,bodyGroup,[-.10,0,0]);
+  for(const s of [-1,1])box(.06,.34,.76,carbon,s*1.92,1.80,-3.18,bodyGroup,[-.10,0,0]);
+  /* 贯穿式尾灯 + 后包围 + 扩散器 + 四出排气 */
+  box(2.88,.22,.10,dark,0,1.00,-3.46,bodyGroup);
+  box(2.62,.09,.06,tailM,0,1.00,-3.52,bodyGroup);
+  for(const s of [-1,1])box(.44,.10,.06,tailM,s*1.05,1.00,-3.52,bodyGroup);
+  box(1.86,.30,.08,carbon,0,.76,-3.48,bodyGroup);
+  box(2.60,.06,.62,carbon,0,.40,-3.46,bodyGroup);
+  for(let i=-2;i<=2;i++)box(.05,.26,.52,carbon,i*.34,.33,-3.50,bodyGroup);
+  for(const s of [-1,1])for(const o of [.40,.76])
+    cyl(.12,.12,.30,10,chrome,s*o,.58,-3.52,bodyGroup,[Math.PI/2,0,0]);
   underGlow=glowQuad(0xff4a2a,7,.2,carRoot,0,.18,0);
   underGlow.rotation.x=-Math.PI/2;billboards.pop();
   shadowFake=new T.Mesh(new T.PlaneGeometry(4.6,8.4),
     new T.MeshBasicMaterial({color:0x000000,transparent:true,opacity:.34,depthWrite:false}));
   shadowFake.rotation.x=-Math.PI/2;shadowFake.position.y=.035;carRoot.add(shadowFake);
-  const tireM=M(0x111317,{roughness:.95}),rimM=M(0xc9d8e0,{roughness:.25,metalness:.9});
-  const hubM=M(0x2b343c,{roughness:.4,metalness:.7}),caliper=EM(0xff4a2a,.2,{roughness:.5});
-  const treadM=M(0x1b1e22,{roughness:1});
+
+  /* 轮组：开口胎体 + 十辐轮毂 + 刹车盘 + 卡钳 */
+  const tireM=M(0x0e1014,{roughness:.96,side:T.DoubleSide});
+  const rimM=M(0x3b444f,{roughness:.34,metalness:.85});
+  const lipM=M(0xc8d6de,{roughness:.2,metalness:.95});
+  const discM=M(0x59626c,{roughness:.4,metalness:.85});
+  const calM=EM(0xff4a1e,.4,{roughness:.5});
   for(const key of ['FL','FR','RL','RR']){
     const side=key[1]==='L'?-1:1,front=key[0]==='F';
-    const sg=new T.Group();sg.position.set(side*1.72,.98,front?2.35:-2.35);tilt.add(sg);
+    const sg=new T.Group();sg.position.set(side*1.72,WHEEL_R,front?2.35:-2.35);tilt.add(sg);
     const sp=new T.Group();sg.add(sp);
     wheels[key]={sg,sp,front,side};
-    const tg=new T.CylinderGeometry(.98,.98,.66,22);tg.rotateZ(Math.PI/2);
+    // 胎面（开口圆柱）+ 胎侧环
+    const tg=new T.CylinderGeometry(WHEEL_R,WHEEL_R,.62,24,1,true);tg.rotateZ(Math.PI/2);
     const tire=new T.Mesh(tg,tireM);tire.castShadow=true;sp.add(tire);
-    for(let i=0;i<12;i++){
-      const a=i/12*TAU,t=new T.Mesh(new T.BoxGeometry(.7,.12,.22),treadM);
-      t.position.set(0,Math.cos(a)*.98,Math.sin(a)*.98);t.rotation.x=-a;sp.add(t);
+    for(const sx of [-1,1]){
+      const rg=new T.RingGeometry(.50,WHEEL_R,24);rg.rotateY(Math.PI/2);
+      const r=new T.Mesh(rg,tireM);r.position.x=sx*.31;sp.add(r);
     }
-    const rg=new T.CylinderGeometry(.62,.62,.7,18);rg.rotateZ(Math.PI/2);
-    const rim=new T.Mesh(rg,rimM);rim.castShadow=true;sp.add(rim);
-    for(let i=0;i<5;i++){
-      const a=i/5*TAU,spoke=new T.Mesh(new T.BoxGeometry(.74,.16,.2),hubM);
-      spoke.position.set(.02,Math.cos(a)*.35,Math.sin(a)*.35);spoke.rotation.x=-a;sp.add(spoke);
+    // 胎纹块（合并为一次绘制）
+    const treads=[];
+    for(let i=0;i<14;i++){
+      const a=i/14*TAU;
+      treads.push(xg(new T.BoxGeometry(.66,.09,.18),0,Math.cos(a)*(WHEEL_R-.015),
+        Math.sin(a)*(WHEEL_R-.015),a,0,0));
     }
-    const hg=new T.CylinderGeometry(.2,.2,.76,12);hg.rotateZ(Math.PI/2);
-    sp.add(new T.Mesh(hg,hubM));
-    box(.22,.44,.3,caliper,side*.34,.1,0,sg);
+    sp.add(new T.Mesh(mergeGeos(treads),M(0x191c21,{roughness:1})));
+    // 轮辋（开口筒）+ 外唇
+    const rg2=new T.CylinderGeometry(.50,.50,.54,20,1,true);rg2.rotateZ(Math.PI/2);
+    sp.add(new T.Mesh(rg2,rimM));
+    const lip=new T.Mesh(new T.TorusGeometry(.50,.035,6,20),lipM);
+    lip.rotation.y=Math.PI/2;lip.position.x=side*.27;sp.add(lip);
+    // 十辐（合并）
+    const spokes=[];
+    for(let i=0;i<10;i++){
+      const a=i/10*TAU;
+      spokes.push(xg(new T.BoxGeometry(.09,.44,.11),side*.20,Math.cos(a)*.30,Math.sin(a)*.30,a,0,0));
+    }
+    sp.add(new T.Mesh(mergeGeos(spokes),M(0x76828f,{roughness:.3,metalness:.88})));
+    const hub=new T.CylinderGeometry(.15,.15,.18,12);hub.rotateZ(Math.PI/2);
+    const hm=new T.Mesh(hub,lipM);hm.position.x=side*.22;sp.add(hm);
+    // 刹车盘（随轮转）+ 卡钳（不随轮转）
+    const dg=new T.CylinderGeometry(.42,.42,.05,20);dg.rotateZ(Math.PI/2);
+    const disc=new T.Mesh(dg,discM);disc.position.x=-side*.02;sp.add(disc);
+    box(.12,.26,.18,calM,-side*.10,.24,-.02,sg);
   }
 }
 function carWheelWorld(side,front){
@@ -1177,12 +1331,14 @@ function buildCity(){
           else{uv=vec2(vP.x,vP.z);}
           vec3 col=vTint*vec3(.24,.28,.46);
           if(uStyle>1.5){
-            // 远景剪影：只留轮廓和零星窗光
-            float edge=smoothstep(.0,.06,uv.y)*0.0;
+            // 远景剪影：整层窗户一起亮灭（楼层随机 + 每隔几秒换一批）
             vec2 g=uv/vec2(7.0,11.0);vec2 cell=floor(g),f=fract(g);
+            float fl=floor(g.y);
+            float tq=floor(uT*.11);
+            float flit=step(.46,h21(vec2(fl+vSeed*31.0,tq+vSeed*7.0)));
             float win=step(.22,f.x)*step(f.x,.78)*step(.3,f.y)*step(f.y,.7);
-            float r=h21(cell+vec2(vSeed*7.0,vSeed*3.0)+face*13.0);
-            col=vTint*vec3(.10,.12,.22)+vec3(.35,.55,.8)*win*step(.82,r)*.55;
+            float r=h21(cell+vSeed);
+            col=vTint*vec3(.10,.12,.22)+vec3(.35,.55,.8)*win*flit*(.55+.45*r)*.8;
             col=mix(col,vec3(.055,.035,.10),.55);
           }else if(uStyle>.5){
             // 中景塔楼：窗格 + 顶部/腰部灯带
@@ -1518,13 +1674,14 @@ function buildStore(){
   box(30,.5,.4,EM(0xff5a3a,1.0),0,-.3,6.2,aw);
   // 门头招牌：白底 + 红色立体中文校牌
   box(42,9.2,1.1,M(0x0b0e18,{roughness:.7,metalness:.4}),0,31,D/2+.2,g);
-  box(40.4,7.6,.9,EM(0xfff3e0,1.05,{roughness:.42}),0,31,D/2+.85,g);
-  signText('中山市第一中学',g,0,31,D/2+1.45,5.18,5.5,0xff1a1a);
+  box(40.4,7.6,.9,EM(0xfff3e0,.86,{roughness:.62}),0,31,D/2+.85,g);
+  signMesh=signText('中山市第一中学',g,0,31,D/2+1.45,5.18,5.5,0xff1a1a);
   box(42.4,.42,.5,EM(0xff3a2a,1.2),0,35.2,D/2+1.1,g);
   box(42.4,.3,.4,EM(0xffd9a5,.9),0,26.8,D/2+1.1,g);
   const signGlow=new T.Mesh(new T.PlaneGeometry(52,20),new T.MeshBasicMaterial({color:0xff2a2a,
     transparent:true,opacity:.10,blending:T.AdditiveBlending,depthWrite:false,side:T.DoubleSide}));
   signGlow.position.set(0,31,D/2+3.2);g.add(signGlow);noRefl.push(signGlow);
+  signGlowMat=signGlow.material;
   // 店内：格栅灯 + 货架 + 商品
   for(let i=0;i<4;i++){
     box(7.4,.28,2.6,EM(0xffe0b6,1.5),-13.5+i*9,24.6,-8+((i%2)*16),g);
@@ -1607,10 +1764,11 @@ function buildStore(){
   const l1=new T.PointLight(0xffbd7a,3.4,80,2);l1.position.set(0,19,6);g.add(l1);
   const l2=new T.PointLight(0xffb877,1.9,60,2);l2.position.set(0,16,-14);g.add(l2);
   const l3=new T.PointLight(0xdceeff,1.5,50,2);l3.position.set(0,9,-D/2+8);g.add(l3);
-  const signLight=new T.SpotLight(0xfff0dc,3.6,140,.95,.62,1.6);
-  signLight.position.set(0,33,D/2+8);signLight.target.position.set(0,0,D/2+16);
+  const signLight=new T.SpotLight(0xfff0dc,2.3,150,1.02,.78,1.5);
+  signLight.position.set(0,26,D/2+20);signLight.target.position.set(0,0,D/2+34);
   g.add(signLight);g.add(signLight.target);
-  const redLight=new T.PointLight(0xff2a2a,1.2,50,2);redLight.position.set(0,30,D/2+6);g.add(redLight);
+  const redLight=new T.PointLight(0xff2a2a,.30,60,2);redLight.position.set(0,30,D/2+19);g.add(redLight);
+  signRed=redLight;
   signGlow.visible=true;
   // 门口左侧 OPEN 发光小牌
   const op=new T.Group();op.position.set(-11,0,D/2+7);op.rotation.y=.18;g.add(op);
@@ -1866,6 +2024,36 @@ function updateRain(dt){
     if(!(Math.abs(rx)<26&&Math.abs(rz+8)<35))spawnRipple(rx,rz);
   }
 }
+/* 店招霓虹：0.5Hz 呼吸 + 偶发接触不良式闪烁 */
+function updateSign(dt){
+  if(!signMesh)return;
+  signFlickT-=dt;
+  if(signFlickT<=0){
+    signFlickT=rnd(1.8,6.2);
+    if(Math.random()<.62)signFlick=rnd(.4,1);
+  }
+  signFlick=Math.max(0,signFlick-dt*6.5);
+  signBreath=1+.14*Math.sin(clockTime*Math.PI);          // 2 秒一循环 = 0.5Hz
+  const k=signBreath*(1-signFlick*(Math.random()<.5?.58:.22));
+  signMesh.material.emissiveIntensity=1.6*k;
+  if(signGlowMat)signGlowMat.opacity=.10*k;
+  if(signRed)signRed.intensity=.30*k;
+}
+/* 车压过积水：四个轮子各推开一圈涟漪 */
+let ripDistT=0,ripWheelI=0;
+function disturbPuddles(dt){
+  if(!running||paused||car.speed<13)return;
+  ripDistT-=dt;
+  if(ripDistT>0)return;
+  ripDistT=rnd(.055,.10)*(22/Math.max(car.speed,8));
+  const k=['FL','FR','RL','RR'][ripWheelI++&3],w=wheels[k];
+  if(!w)return;
+  const f=w.front?2.35:-2.35,side=w.side*1.72;
+  const c=Math.cos(car.h),sn=Math.sin(car.h);
+  const x=car.x+sn*f+c*side,z=car.z+c*f-sn*side;
+  if(Math.abs(x)<26&&Math.abs(z+8)<35)return;            // 店里不积水
+  spawnRipple(x,z);
+}
 function emitWetSpray(dt){
   if(!running||car.speed<18)return;
   wetSprayT+=dt;if(wetSprayT>.032)wetSprayT=0;else return;
@@ -1993,10 +2181,35 @@ const ScanShader={uniforms:{tDiffuse:{value:null},uT:{value:0}},
 /* ---------- 物理 ---------- */
 const PH={engine:118,brake:190,revMax:42,maxSpeed:138,drag:.55,roll:5.5,wheelBase:4.7,
           maxSteer:.66,steerSpeed:7.5,grip:7.4,hbGrip:.92};
+/* 转向手感：0.15s 缓启动 / 满舵 70% / 高速衰减 / 辅助回正 */
+const STEER={ramp:.15,angle:.70,k120:.60,k160:.45,hbLat:.80,assist:.15,assistAt:.60};
+let steerIn=0,steerAssist=0,kmhNow=0;
+function wrapAng(a){return Math.atan2(Math.sin(a),Math.cos(a));}
 function physics(dt){
-  const thr=(keys.w?1:0)-(keys.s?1:0),st=(keys.a?1:0)-(keys.d?1:0),hb=!!keys.space;
+  const thr=(keys.w?1:0)-(keys.s?1:0),hb=!!keys.space;
+  const near=nearestOnTrack(car.x,car.z);
+  /* 转向输入 0.15 秒缓启动：0→满舵需 0.15s，松手回中同样 0.15s，不再瞬间满舵 */
+  const st=(keys.a?1:0)-(keys.d?1:0),ramp=dt/STEER.ramp;
+  steerIn+=clamp(st-steerIn,-ramp,ramp);
+  kmhNow=Math.abs(car.vf)*3.15;
   const sr=clamp(Math.abs(car.vf)/PH.maxSpeed,0,1);
-  car.steer=damp(car.steer,st*PH.maxSteer*(1-sr*.66),PH.steerSpeed,dt);
+  /* 速度相关：>120km/h ×0.6，>160km/h 再 ×0.45；20km/h 过渡带避免阶梯突变 */
+  let spd=1;
+  if(kmhNow>120)spd*=lerp(1,STEER.k120,clamp((kmhNow-120)/20,0,1));
+  if(kmhNow>160)spd*=lerp(1,STEER.k160,clamp((kmhNow-160)/20,0,1));
+  /* 辅助回正（默认开启）：偏离中心线超过 60% 车道宽时，最多给 15% 的修正舵 */
+  let aTarget=0;
+  if(car.speed>4){
+    const bp=track.pts[near.idx],bt=track.tans[near.idx];
+    const lat=(car.x-bp.x)*(-bt.z)+(car.z-bp.z)*bt.x;   // >0 = 偏右
+    const over=clamp((Math.abs(lat)-TRACK_HALF*STEER.assistAt)/(TRACK_HALF*.35),0,1);
+    if(over>0){
+      const e=wrapAng(Math.atan2(bt.x,bt.z)-car.h);      // >0 = 赛道方向在车头左侧，需要左打
+      aTarget=(clamp(e*1.1,-1,1)*.45+clamp(lat/(TRACK_HALF*.9),-1,1)*.55)*STEER.assist*over;
+    }
+  }
+  steerAssist=damp(steerAssist,aTarget,7,dt);
+  car.steer=damp(car.steer,(steerIn+steerAssist)*PH.maxSteer*STEER.angle*spd,PH.steerSpeed,dt);
   if(thr>0)car.vf+=PH.engine*(1-clamp(car.vf/PH.maxSpeed,0,1))*dt;
   else if(thr<0){
     if(car.vf>1)car.vf-=PH.brake*dt;else car.vf-=PH.engine*.52*dt;
@@ -2017,7 +2230,7 @@ function physics(dt){
   let vf=car.vx*fx+car.vz*fz,vl=car.vx*rx+car.vz*rz;
   vf=lerp(vf,car.vf,.32);
   vl*=Math.exp(-grip*dt);
-  vl+=-car.yawRate*Math.abs(vf)*dt*(hb?1.15:.55)*(1-clamp(grip/12,0,.8));
+  vl+=-car.yawRate*Math.abs(vf)*dt*(hb?STEER.hbLat:.55)*(1-clamp(grip/12,0,.8));
   vl=clamp(vl,-72,72);
   car.vx=fx*vf+rx*vl;car.vz=fz*vf+rz*vl;
   car.vf=vf;car.vl=vl;car.speed=Math.hypot(car.vx,car.vz);
@@ -2025,14 +2238,13 @@ function physics(dt){
   car.drifting=Math.abs(vl)>8&&car.speed>22;
   impactCool=Math.max(0,impactCool-dt);
   resolveCollisions();edgeBounds(dt);
-  const nearY=nearestOnTrack(car.x,car.z);
-  car.y=damp(car.y,nearY.dist<15?track.ys[nearY.idx]:0,9,dt);
+  car.y=damp(car.y,near.dist<15?track.ys[near.idx]:0,9,dt);
   carRoot.position.set(car.x,car.y+car.airY,car.z);carRoot.rotation.y=car.h;
   const pitch=clamp(-(thr>0?1:thr<0?-1:0)*.035*sr-(keys.s&&car.vf>1?.045:0),-.08,.08);
   tilt.rotation.x=damp(tilt.rotation.x,pitch,6,dt);
   tilt.rotation.z=damp(tilt.rotation.z,clamp(-car.vl*.006-car.yawRate*.16,-.16,.16),6,dt);
   tilt.position.y=damp(tilt.position.y,Math.sin(clockTime*22)*.02*sr,8,dt);
-  const roll=car.vf/.98*dt;
+  const roll=car.vf/WHEEL_R*dt;
   for(const k in wheels){const w=wheels[k];
     if(w.front)w.sg.rotation.y=damp(w.sg.rotation.y,car.steer,14,dt);
     w.sp.rotation.x-=(w.front?roll:roll*(hb?.25:1));}
@@ -2062,6 +2274,17 @@ function resolveCollisions(){
     }
     if(c.bump){car.vx*=.996;car.vz*=.996;continue;}
     if(c.soft){car.vx*=.985;car.vz*=.985;continue;}
+    if(c.rail){                       // 护栏：只消法向速度，切向可滑动，不会把人钉死
+      car.x+=nx*pen;car.z+=nz*pen;
+      const dot=car.vx*nx+car.vz*nz;
+      if(dot<0){
+        car.vx-=dot*nx;car.vz-=dot*nz;car.vx*=.965;car.vz*=.965;
+        if(impactCool<=0&&Math.abs(dot)>36){impactCool=.14;camShake=.32;toast('BARRIER','擦到护栏',.7);}
+      }
+      const rf=Math.sin(car.h),rz2=Math.cos(car.h),rr=Math.cos(car.h),rz3=-Math.sin(car.h);
+      car.vf=car.vx*rf+car.vz*rz2;car.vl=car.vx*rr+car.vz*rz3;
+      continue;
+    }
     car.x+=nx*pen;car.z+=nz*pen;
     const dot=car.vx*nx+car.vz*nz;
     if(dot<0){
@@ -2143,6 +2366,7 @@ function resetCar(full){
   const p=track.curve.getPointAt(.02),tn=track.curve.getTangentAt(.02);
   car.x=p.x;car.z=p.z;car.h=Math.atan2(tn.x,tn.z);
   car.vf=car.vl=car.vx=car.vz=car.speed=0;car.steer=0;car.airY=0;car.drifting=false;
+  steerIn=0;steerAssist=0;
   carRoot.position.set(car.x,0,car.z);carRoot.rotation.y=car.h;
   prevT=nearestOnTrack(car.x,car.z).t;skid.clear();
   if(!full){lapStart=gameTime;nextCP=1;updateCPDots();toast('RESET','回到起跑线',1.1);}
@@ -2194,6 +2418,13 @@ function updateCamera(dt){
     camera.position.x+=rnd(-1,1)*camShake*.55;
     camera.position.y+=rnd(-1,1)*camShake*.4;
     camera.position.z+=rnd(-1,1)*camShake*.55;
+  }
+  /* >150km/h 轻微镜头抖动：高频低幅，只晃不飘 */
+  if(running&&car.speed*3.15>150){
+    const k=clamp((car.speed*3.15-150)/260,0,1),tt=clockTime*47;
+    camera.position.x+=Math.sin(tt*1.7)*k*.075;
+    camera.position.y+=Math.sin(tt*2.31+1.1)*k*.06;
+    camera.rotateZ(Math.sin(tt*1.27)*k*.006);
   }
   camera.fov=damp(camera.fov,baseFov+clamp(car.speed/PH.maxSpeed,0,1)*(camMode===1?17:12),3.5,dt);
   camera.updateProjectionMatrix();
@@ -2311,6 +2542,80 @@ function onResize(){
   $('#minimap').width=608;$('#minimap').height=392;
 }
 
+/* ---------- 程序化音频（Web Audio，不引入任何音频文件） ---------- */
+const AUD={ctx:null,ready:false,muted:false,master:null,rainGain:null,rainLP:null,
+  eng:[],engDet:[1,.997,2.008],engGain:null,engLP:null,skidGain:null,skidBP:null,padGain:null};
+function makeNoise(ctx){
+  const n=Math.floor(ctx.sampleRate*2),b=ctx.createBuffer(1,n,ctx.sampleRate),d=b.getChannelData(0);
+  for(let i=0;i<n;i++)d[i]=Math.random()*2-1;
+  return b;
+}
+function initAudio(){
+  if(AUD.ctx)return;
+  const AC=window.AudioContext||window.webkitAudioContext;if(!AC)return;
+  let ctx;try{ctx=new AC();}catch(e){return;}
+  AUD.ctx=ctx;
+  const master=ctx.createGain();master.gain.value=AUD.muted?0:.4;   // 总音量 40%
+  master.connect(ctx.destination);AUD.master=master;
+  const noise=makeNoise(ctx);
+  // 雨声：白噪声 + 高通去闷 + 低通
+  const rs=ctx.createBufferSource();rs.buffer=noise;rs.loop=true;
+  const rh=ctx.createBiquadFilter();rh.type='highpass';rh.frequency.value=300;
+  const rl=ctx.createBiquadFilter();rl.type='lowpass';rl.frequency.value=1500;rl.Q.value=.55;
+  const rg=ctx.createGain();rg.gain.value=.16;
+  rs.connect(rh);rh.connect(rl);rl.connect(rg);rg.connect(master);rs.start();
+  AUD.rainGain=rg;AUD.rainLP=rl;
+  // 引擎：三支微失谐锯齿波 + 低通（音高随速度）
+  const elp=ctx.createBiquadFilter();elp.type='lowpass';elp.frequency.value=800;elp.Q.value=2.4;
+  const eg=ctx.createGain();eg.gain.value=.012;
+  elp.connect(eg);eg.connect(master);AUD.engLP=elp;AUD.engGain=eg;
+  for(const k of AUD.engDet){
+    const o=ctx.createOscillator();o.type='sawtooth';o.frequency.value=64*k;
+    o.connect(elp);o.start();AUD.eng.push(o);
+  }
+  // 打滑：噪声 + 带通
+  const ss=ctx.createBufferSource();ss.buffer=noise;ss.loop=true;
+  const sb=ctx.createBiquadFilter();sb.type='bandpass';sb.frequency.value=1850;sb.Q.value=7;
+  const sg=ctx.createGain();sg.gain.value=0;
+  ss.connect(sb);sb.connect(sg);sg.connect(master);ss.start();
+  AUD.skidGain=sg;AUD.skidBP=sb;
+  // 50Hz 低音 pad 环境底噪
+  const pg=ctx.createGain();pg.gain.value=.05;pg.connect(master);AUD.padGain=pg;
+  [[50,1],[50.6,.82],[100.2,.24]].forEach(([f,v])=>{
+    const o=ctx.createOscillator();o.type='sine';o.frequency.value=f;
+    const gg=ctx.createGain();gg.gain.value=v;o.connect(gg);gg.connect(pg);o.start();
+  });
+  AUD.ready=true;
+}
+function bootAudio(){
+  initAudio();
+  if(AUD.ctx&&AUD.ctx.state==='suspended')AUD.ctx.resume();
+}
+function updateAudio(){
+  if(!AUD.ready)return;
+  const t=AUD.ctx.currentTime,ratio=clamp(Math.abs(car.vf)/PH.maxSpeed,0,1);
+  const base=58+ratio*152;
+  for(let i=0;i<AUD.eng.length;i++)AUD.eng[i].frequency.setTargetAtTime(base*AUD.engDet[i],t,.05);
+  AUD.engLP.frequency.setTargetAtTime(620+ratio*1700,t,.08);
+  AUD.engGain.gain.setTargetAtTime(running&&!paused?(.022+ratio*.048+(keys.w?.018:0)):.010,t,.09);
+  AUD.rainGain.gain.setTargetAtTime(.15+ratio*.06,t,.30);            // 雨声与车速轻微相关
+  AUD.rainLP.frequency.setTargetAtTime(1350+ratio*1100,t,.40);
+  const slip=car.drifting?clamp((Math.abs(car.vl)-8)/16,0,1):0;
+  const brk=(keys.s&&car.vf>8)?clamp(car.vf/55,0,1):0;
+  AUD.skidGain.gain.setTargetAtTime(clamp(slip*.17+brk*.06,0,.2),t,.05);
+  AUD.skidBP.frequency.setTargetAtTime(1500+slip*900,t,.10);
+}
+function toggleMute(){
+  AUD.muted=!AUD.muted;
+  if(AUD.master)AUD.master.gain.setTargetAtTime(AUD.muted?0:.4,AUD.ctx.currentTime,.05);
+  const el=$('#audioTxt');
+  if(el){el.textContent=AUD.muted?'MUTED · M 恢复':'ON · M 静音';el.style.color=AUD.muted?'#ff8a8a':'#8fe6a0';}
+  toast(AUD.muted?'MUTE':'AUDIO ON',AUD.muted?'环境音已关闭':'雨声 / 引擎 / 打滑 / 50Hz 底噪',1);
+  if(!AUD.muted)bootAudio();
+}
+addEventListener('pointerdown',bootAudio,{once:true});
+addEventListener('keydown',bootAudio,{once:true});
+
 /* ---------- 输入 ---------- */
 function bindInput(){
   const map=e=>({KeyW:'w',ArrowUp:'w',KeyS:'s',ArrowDown:'s',KeyA:'a',ArrowLeft:'a',
@@ -2318,6 +2623,7 @@ function bindInput(){
   addEventListener('keydown',e=>{
     const k=map(e);if(k){keys[k]=true;e.preventDefault();}
     if(e.code==='KeyC'&&!e.repeat)cycleCam();
+    if(e.code==='KeyM'&&!e.repeat)toggleMute();
     if(e.code==='KeyP'&&!e.repeat)togglePause();
     if(e.code==='KeyR'&&!e.repeat){if(finished)restartRace();else resetCar(false);}
     if(e.code==='Enter'&&!e.repeat){
@@ -2382,7 +2688,8 @@ function loop(now){
     g.gl.material.uniforms.uI.value=(isNext?.16:.07)+cpFlash[i]*.2;
     cpFlash[i]=Math.max(0,cpFlash[i]-dt*1.6);
   });
-  updateSky(dt);updateRain(dt);emitSteam(dt);particlesAdd.update(dt);particlesSmoke.update(dt);
+  updateSky(dt);updateRain(dt);updateSign(dt);disturbPuddles(dt);
+  emitSteam(dt);particlesAdd.update(dt);particlesSmoke.update(dt);
   for(const b of billboards){
     if(b===underGlow)continue;
     b.parent.getWorldQuaternion(tmpQ);
@@ -2394,6 +2701,7 @@ function loop(now){
     while(acc>=1/120&&steps<6){physics(1/120);acc-=1/120;steps++;}
     emitExhaust(dt);emitDrift(dt);emitWetSpray(dt);
   }else acc=0;
+  updateAudio();
   updateCamera(dt);
   if(frameNo%2===0)renderReflection();
   if(toastTimer>0){toastTimer-=dt;if(toastTimer<=0)$('#toast').classList.remove('show');}
