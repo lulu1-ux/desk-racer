@@ -1536,7 +1536,7 @@ function buildNeon(){
     neonAnchors.push({x:p.x-tn.z*s*HALF,z:p.z+tn.x*s*HALF,c:i%2?C_FOG_MAG:C_FOG_CYAN});
   }
   neonAnchors.push({x:0,z:14,c:C_FOG_WARM});
-  const words=['NEON','CYBER','24H','DRIFT','TURBO','MART','OPEN','NIGHT'];
+  const words=['SCUT','SCUT','24H','SCUT','SCUT','SCUT','OPEN','SCUT'];
   const ts=[.06,.17,.28,.38,.50,.61,.72,.85];
   ts.forEach((t,i)=>{
     const p=track.curve.getPointAt(t),tn=track.curve.getTangentAt(t),off=(i%2?1:-1)*14;
@@ -2728,5 +2728,6 @@ function loop(now){
 </script>
 </body>
 </html>
+
 
 
