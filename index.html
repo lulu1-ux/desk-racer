@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
@@ -2182,7 +2182,7 @@ const ScanShader={uniforms:{tDiffuse:{value:null},uT:{value:0}},
 const PH={engine:118,brake:190,revMax:42,maxSpeed:138,drag:.55,roll:5.5,wheelBase:4.7,
           maxSteer:.66,steerSpeed:7.5,grip:7.4,hbGrip:.92};
 /* 转向手感：0.15s 缓启动 / 满舵 70% / 高速衰减 / 辅助回正 */
-const STEER={ramp:.15,angle:.70,k120:.60,k160:.45,hbLat:.80,assist:.15,assistAt:.60};
+const STEER={ramp:.15,angle:.70,k120:.60,k160:.45,hbLat:.80,assist:.10,assistAt:.75};
 let steerIn=0,steerAssist=0,kmhNow=0;
 function wrapAng(a){return Math.atan2(Math.sin(a),Math.cos(a));}
 function physics(dt){
@@ -2205,7 +2205,7 @@ function physics(dt){
     const over=clamp((Math.abs(lat)-TRACK_HALF*STEER.assistAt)/(TRACK_HALF*.35),0,1);
     if(over>0){
       const e=wrapAng(Math.atan2(bt.x,bt.z)-car.h);      // >0 = 赛道方向在车头左侧，需要左打
-      aTarget=(clamp(e*1.1,-1,1)*.45+clamp(lat/(TRACK_HALF*.9),-1,1)*.55)*STEER.assist*over;
+      aTarget=clamp(e*1.1,-1,1)*STEER.assist*over;
     }
   }
   steerAssist=damp(steerAssist,aTarget,7,dt);
@@ -2728,3 +2728,4 @@ function loop(now){
 </script>
 </body>
 </html>
+
